@@ -58,11 +58,11 @@ pub fn build_index(csv_path: &str, index_dir: &str) -> Result<()> {
 
         // Periodic commits for large datasets (every 10M records) to prevent memory issues
         // This also makes progress visible if process is interrupted
+        // Note: After commit(), the writer can continue to be used - no need to recreate
         if record_count % 10_000_000 == 0 {
             println!("[Checkpoint] Committing at {} records...", record_count);
             writer.commit()?;
-            // Recreate writer after commit
-            writer = index.writer(1_000_000_000)?;
+            // Writer can continue to be used after commit - no recreation needed
         }
 
         // Log progress every N seconds or every N records
