@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use tantivy::schema::{Field, Schema};
 use tantivy::{Index, Term};
-use tantivy::query::{Query, TermQuery, BooleanQuery, Occur};
+use tantivy::query::{Query, TermQuery, BooleanQuery, Occur, QueryParser};
 use tantivy::schema::IndexRecordOption;
 
 #[derive(Debug, Clone)]
@@ -178,42 +178,17 @@ impl CustomQueryParser {
                 .ok_or_else(|| anyhow!("Unknown field: {}", clause.field))?;
 
             // All fields are TEXT fields in the existing index
-            // For mobile/alt/master_id: treat as exact match (single term)
-            // For name/fname/address/email: handle multi-word queries
-            let query: Box<dyn Query> = match clause.field.as_str() {
-                "mobile" | "alt" | "master_id" => {
-                    // TEXT fields but we want exact match
-                    // Normalized value should match exactly (no spaces, lowercase)
-                    // TEXT tokenizer will handle this correctly
-                    let term = Term::from_field_text(*field, &normalized_value);
-                    Box::new(TermQuery::new(term, IndexRecordOption::WithFreqsAndPositions))
-                }
-                "name" | "fname" | "address" | "email" => {
-                    // TEXT fields - handle multi-word queries
-                    // Split by whitespace and create a BooleanQuery with Must for each word
-                    let words: Vec<&str> = normalized_value.split_whitespace().collect();
-
-                    if words.len() == 1 {
-                        // Single word - use TermQuery
-                        let term = Term::from_field_text(*field, words[0]);
-                        Box::new(TermQuery::new(term, IndexRecordOption::WithFreqsAndPositions))
-                    } else {
-                        // Multiple words - create BooleanQuery with Must for each word
-                        // This ensures all words must be present (AND logic)
-                        let mut term_queries: Vec<(Occur, Box<dyn Query>)> = Vec::new();
-                        for word in words {
-                            let term = Term::from_field_text(*field, word);
-                            term_queries.push((
-                                Occur::Must,
-                                Box::new(TermQuery::new(term, IndexRecordOption::WithFreqsAndPositions)) as Box<dyn Query>
-                            ));
-                        }
-                        Box::new(BooleanQuery::new(term_queries))
-                    }
-                }
-                _ => {
-                    return Err(anyhow!("Unsupported field: {}", clause.field));
-                }
+            // Use QueryParser for TEXT fields - it handles tokenization correctly and is optimized
+            // For exact matches, QueryParser will still work correctly
+            let query: Box<dyn Query> = {
+                // Use QueryParser for the specific field - much faster for TEXT fields
+                let field_vec = vec![*field];
+                let parser = QueryParser::for_index(&self.index, field_vec);
+                
+                // Build query string: "field:value" format
+                // QueryParser handles tokenization and is optimized for TEXT fields
+                let query_str = format!("{}:{}", clause.field, normalized_value);
+                parser.parse_query(&query_str)?
             };
 
             // Determine Occur based on operator
