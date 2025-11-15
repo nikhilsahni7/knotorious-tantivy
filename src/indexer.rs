@@ -13,7 +13,9 @@ pub fn build_index(csv_path: &str, index_dir: &str) -> Result<()> {
     let start_time = Instant::now();
     let schema = build_schema();
     let index = Index::create_in_dir(Path::new(index_dir), schema.clone())?;
-    let mut writer = index.writer(400_000_000)?; // 400MB writer buffer
+    // Increased buffer to 1GB for faster ingestion (was 400MB)
+    // Larger buffer = fewer flushes = faster indexing
+    let mut writer = index.writer(1_000_000_000)?; // 1GB writer buffer
 
     let master = schema.get_field("master_id").unwrap();
     let mobile = schema.get_field("mobile").unwrap();
@@ -23,8 +25,11 @@ pub fn build_index(csv_path: &str, index_dir: &str) -> Result<()> {
     let addr   = schema.get_field("address").unwrap();
     let email  = schema.get_field("email").unwrap();
 
+    // Optimize CSV reading: larger buffer, no trimming overhead
     let mut rdr = ReaderBuilder::new()
         .has_headers(true)
+        .buffer_capacity(1_048_576) // 1MB buffer for CSV reading
+        .flexible(false) // Strict parsing for speed
         .from_path(csv_path)?;
 
     let mut record_count = 0u64;
@@ -38,26 +43,43 @@ pub fn build_index(csv_path: &str, index_dir: &str) -> Result<()> {
         let row = row?;
 
         let mut doc = TantivyDocument::default();
-        doc.add_text(master, &row[0]);
-        doc.add_text(mobile, &row[1]);
-        doc.add_text(alt,    &row[2]);
-        doc.add_text(name,   &row[3]);
-        doc.add_text(fname,  &row[4]);
-        doc.add_text(addr,   &row[5]);
-        doc.add_text(email,  &row[6]);
+        // CSV column order: id,mobile,fname,name,alt,email,address
+        doc.add_text(master, &row[0]);  // id -> master_id
+        doc.add_text(mobile, &row[1]);  // mobile -> mobile
+        doc.add_text(fname,  &row[2]);  // fname -> fname
+        doc.add_text(name,   &row[3]);  // name -> name
+        doc.add_text(alt,    &row[4]);  // alt -> alt
+        doc.add_text(email,  &row[5]);  // email -> email
+        doc.add_text(addr,   &row[6]);  // address -> address
 
         writer.add_document(doc)?;
 
         record_count += 1;
+
+        // Periodic commits for large datasets (every 10M records) to prevent memory issues
+        // This also makes progress visible if process is interrupted
+        if record_count % 10_000_000 == 0 {
+            println!("[Checkpoint] Committing at {} records...", record_count);
+            writer.commit()?;
+            // Recreate writer after commit
+            writer = index.writer(1_000_000_000)?;
+        }
 
         // Log progress every N seconds or every N records
         let elapsed = last_log_time.elapsed().as_secs_f64();
         if elapsed >= log_interval_secs || record_count % log_interval_records == 0 {
             let total_elapsed = start_time.elapsed().as_secs_f64();
             let records_per_sec = record_count as f64 / total_elapsed;
+            let estimated_total_time = if records_per_sec > 0.0 {
+                let estimated_records = 1_800_000_000u64; // Estimate for your dataset
+                let remaining = (estimated_records.saturating_sub(record_count)) as f64 / records_per_sec;
+                format!(" | ETA: {:.1} hours", remaining / 3600.0)
+            } else {
+                String::new()
+            };
             println!(
-                "[Progress] Processed {} records | Elapsed: {:.1}s | Speed: {:.0} records/sec",
-                record_count, total_elapsed, records_per_sec
+                "[Progress] Processed {} records | Elapsed: {:.1}s | Speed: {:.0} records/sec{}",
+                record_count, total_elapsed, records_per_sec, estimated_total_time
             );
             last_log_time = Instant::now();
         }

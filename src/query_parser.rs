@@ -177,18 +177,38 @@ impl CustomQueryParser {
             let field = self.field_map.get(&clause.field)
                 .ok_or_else(|| anyhow!("Unknown field: {}", clause.field))?;
 
-            // All fields are TEXT fields in the existing index
-            // Use QueryParser for TEXT fields - it handles tokenization correctly and is optimized
-            // For exact matches, QueryParser will still work correctly
-            let query: Box<dyn Query> = {
-                // Use QueryParser for the specific field - much faster for TEXT fields
-                let field_vec = vec![*field];
-                let parser = QueryParser::for_index(&self.index, field_vec);
-                
-                // Build query string: "field:value" format
-                // QueryParser handles tokenization and is optimized for TEXT fields
-                let query_str = format!("{}:{}", clause.field, normalized_value);
-                parser.parse_query(&query_str)?
+            // Optimized query building based on field type
+            // STRING fields (mobile, alt, master_id): Use TermQuery for fastest exact matches
+            // TEXT fields (name, fname, address, email): Use QueryParser for partial matches
+            let query: Box<dyn Query> = match clause.field.as_str() {
+                "mobile" | "alt" | "master_id" => {
+                    // STRING fields - use TermQuery (fastest for exact matches)
+                    let term = Term::from_field_text(*field, &normalized_value);
+                    Box::new(TermQuery::new(term, IndexRecordOption::Basic))
+                }
+                "name" | "fname" | "address" | "email" => {
+                    // TEXT fields - use QueryParser for partial/prefix matches
+                    let field_vec = vec![*field];
+                    let parser = QueryParser::for_index(&self.index, field_vec);
+
+                    // Handle multi-word queries for partial matching
+                    let words: Vec<&str> = normalized_value.split_whitespace().collect();
+                    if words.len() == 1 {
+                        // Single word - simple query
+                        let query_str = format!("{}:{}", clause.field, words[0]);
+                        parser.parse_query(&query_str)?
+                    } else {
+                        // Multiple words - use AND query for all words
+                        let query_str = words.iter()
+                            .map(|w| format!("{}:{}", clause.field, w))
+                            .collect::<Vec<_>>()
+                            .join(" AND ");
+                        parser.parse_query(&query_str)?
+                    }
+                }
+                _ => {
+                    return Err(anyhow!("Unsupported field: {}", clause.field));
+                }
             };
 
             // Determine Occur based on operator

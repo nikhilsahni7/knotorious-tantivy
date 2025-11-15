@@ -5,10 +5,10 @@ use std::collections::HashSet;
 use std::time::Instant;
 use tantivy::{
     Index, TantivyDocument, collector::TopDocs,
-    ReloadPolicy, DocAddress
+    ReloadPolicy, DocAddress, Term
 };
-use tantivy::query::{QueryParser, Query, BooleanQuery, Occur};
-use tantivy::schema::Value;
+use tantivy::query::{QueryParser, Query, BooleanQuery, Occur, TermQuery};
+use tantivy::schema::{Value, IndexRecordOption};
 use serde_json::json;
 
 const MAX_RESULTS: usize = 10_000;
@@ -46,10 +46,6 @@ pub fn search(index_dir: &str, query_str: &str) -> Result<()> {
     let is_mobile_search = parsed_query.clauses.len() == 1
         && parsed_query.clauses[0].field == "mobile";
 
-    // Check if this is a master_id or alt search (should return all results, no deduplication)
-    let is_exact_id_search = parsed_query.clauses.len() == 1
-        && (parsed_query.clauses[0].field == "master_id" || parsed_query.clauses[0].field == "alt");
-
     let mut all_doc_addresses: HashSet<DocAddress> = HashSet::new();
 
     if is_mobile_search {
@@ -74,43 +70,15 @@ pub fn search(index_dir: &str, query_str: &str) -> Result<()> {
     println!("  Search execution time: {:.3}ms", execute_time.as_secs_f64() * 1000.0);
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // Retrieve documents
-    // For mobile/master_id/alt searches: return ALL results (no deduplication)
-    // For other searches: deduplicate by master_id
+    // Retrieve documents - NO DEDUPLICATION
+    // Return ALL results including duplicates for maximum performance
     let retrieve_start = Instant::now();
     let mut results: Vec<TantivyDocument> = Vec::new();
 
-    if is_mobile_search || is_exact_id_search {
-        // Mobile/master_id/alt search: return ALL results including duplicates
-        for addr in all_doc_addresses.iter().take(MAX_RESULTS) {
-            let retrieved: TantivyDocument = searcher.doc(*addr)?;
-            results.push(retrieved);
-        }
-    } else {
-        // Other searches: deduplicate by master_id
-        let mut seen_master_ids: HashSet<String> = HashSet::new();
-        let master_id_field = schema.get_field("master_id").unwrap();
-
-        for addr in all_doc_addresses.iter().take(MAX_RESULTS) {
-            let retrieved: TantivyDocument = searcher.doc(*addr)?;
-
-            // Extract master_id for deduplication
-            let master_id_values: Vec<String> = retrieved
-                .get_all(master_id_field)
-                .filter_map(|v| Value::as_str(&v).map(|s| s.to_string()))
-                .collect();
-
-            let master_id = master_id_values.first().cloned().unwrap_or_default();
-
-            // Deduplicate by master_id
-            if !master_id.is_empty() && !seen_master_ids.contains(&master_id) {
-                seen_master_ids.insert(master_id);
-                results.push(retrieved);
-            } else if master_id.is_empty() {
-                // Include documents without master_id
-                results.push(retrieved);
-            }
-        }
+    // Return all results without deduplication for maximum speed
+    for addr in all_doc_addresses.iter().take(MAX_RESULTS) {
+        let retrieved: TantivyDocument = searcher.doc(*addr)?;
+        results.push(retrieved);
     }
 
     let retrieve_time = retrieve_start.elapsed();
@@ -153,9 +121,9 @@ fn execute_mobile_fanout(
     let alt_field = schema.get_field("alt").unwrap();
 
     // Step 1: Find all rows where mobile = X
-    // Use QueryParser for TEXT fields - much faster
-    let mobile_parser = QueryParser::for_index(searcher.index(), vec![mobile_field]);
-    let mobile_query = mobile_parser.parse_query(&format!("mobile:{}", mobile_value))?;
+    // Use TermQuery for STRING field - fastest for exact matches
+    let mobile_term = Term::from_field_text(mobile_field, mobile_value);
+    let mobile_query = TermQuery::new(mobile_term, IndexRecordOption::Basic);
     let mobile_docs = searcher.search(&mobile_query, &TopDocs::with_limit(MAX_RESULTS))?;
 
     let mut master_ids: HashSet<String> = HashSet::new();
@@ -176,32 +144,19 @@ fn execute_mobile_fanout(
     }
 
     // Step 2 & 3: Find all rows with those master_id values
-    // Batch master_id queries for better performance
+    // Use TermQuery for STRING field - fastest for exact matches
     if !master_ids.is_empty() {
-        let master_id_parser = QueryParser::for_index(searcher.index(), vec![master_id_field]);
-
-        // Build OR query for all master_ids (skip empty ones)
+        // Build OR query for all master_ids using TermQuery
         let mut master_id_queries: Vec<(Occur, Box<dyn Query>)> = Vec::new();
         for master_id in &master_ids {
             let master_id = master_id.trim();
             if master_id.is_empty() {
                 continue;
             }
-            // Escape special characters that might break QueryParser
-            let query_str = format!("master_id:\"{}\"", master_id.replace('"', "\\\""));
-            match master_id_parser.parse_query(&query_str) {
-                Ok(query) => master_id_queries.push((Occur::Should, query)),
-                Err(e) => {
-                    // If quoted query fails, try without quotes
-                    let simple_query_str = format!("master_id:{}", master_id);
-                    if let Ok(query) = master_id_parser.parse_query(&simple_query_str) {
-                        master_id_queries.push((Occur::Should, query));
-                    } else {
-                        // Skip invalid master_ids
-                        eprintln!("Warning: Skipping invalid master_id '{}': {}", master_id, e);
-                    }
-                }
-            }
+            // Use TermQuery for STRING field - much faster
+            let master_id_term = Term::from_field_text(master_id_field, master_id);
+            let master_id_query = TermQuery::new(master_id_term, IndexRecordOption::Basic);
+            master_id_queries.push((Occur::Should, Box::new(master_id_query)));
         }
 
         if master_id_queries.len() == 1 {
@@ -219,29 +174,15 @@ fn execute_mobile_fanout(
     }
 
     // Step 4: Find all rows where alt = X (only if mobile_value is not empty)
+    // Use TermQuery for STRING field - fastest for exact matches
     if !mobile_value.trim().is_empty() {
-        let alt_parser = QueryParser::for_index(searcher.index(), vec![alt_field]);
-        // Use quoted query to handle special characters
-        let alt_query_str = format!("alt:\"{}\"", mobile_value.replace('"', "\\\""));
-        match alt_parser.parse_query(&alt_query_str) {
-            Ok(alt_query) => {
-                let alt_docs = searcher.search(&alt_query, &TopDocs::with_limit(MAX_RESULTS))?;
-                for (_score, addr) in &alt_docs {
-                    all_addresses.insert(*addr);
-                }
-            }
-            Err(_) => {
-                // Fallback to unquoted query
-                if let Ok(alt_query) = alt_parser.parse_query(&format!("alt:{}", mobile_value)) {
-                    let alt_docs = searcher.search(&alt_query, &TopDocs::with_limit(MAX_RESULTS))?;
-                    for (_score, addr) in &alt_docs {
-                        all_addresses.insert(*addr);
-                    }
-                }
-            }
+        let alt_term = Term::from_field_text(alt_field, mobile_value);
+        let alt_query = TermQuery::new(alt_term, IndexRecordOption::Basic);
+        let alt_docs = searcher.search(&alt_query, &TopDocs::with_limit(MAX_RESULTS))?;
+        for (_score, addr) in &alt_docs {
+            all_addresses.insert(*addr);
         }
     }
-
 
     Ok(all_addresses)
 }
