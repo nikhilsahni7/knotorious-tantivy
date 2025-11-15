@@ -46,6 +46,10 @@ pub fn search(index_dir: &str, query_str: &str) -> Result<()> {
     let is_mobile_search = parsed_query.clauses.len() == 1
         && parsed_query.clauses[0].field == "mobile";
 
+    // Check if this is a master_id or alt search (should return all results, no deduplication)
+    let is_exact_id_search = parsed_query.clauses.len() == 1
+        && (parsed_query.clauses[0].field == "master_id" || parsed_query.clauses[0].field == "alt");
+
     let mut all_doc_addresses: HashSet<DocAddress> = HashSet::new();
 
     if is_mobile_search {
@@ -71,13 +75,13 @@ pub fn search(index_dir: &str, query_str: &str) -> Result<()> {
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     // Retrieve documents
-    // For mobile searches: return ALL results (no deduplication)
+    // For mobile/master_id/alt searches: return ALL results (no deduplication)
     // For other searches: deduplicate by master_id
     let retrieve_start = Instant::now();
     let mut results: Vec<TantivyDocument> = Vec::new();
 
-    if is_mobile_search {
-        // Mobile search: return ALL results including duplicates
+    if is_mobile_search || is_exact_id_search {
+        // Mobile/master_id/alt search: return ALL results including duplicates
         for addr in all_doc_addresses.iter().take(MAX_RESULTS) {
             let retrieved: TantivyDocument = searcher.doc(*addr)?;
             results.push(retrieved);
@@ -118,9 +122,11 @@ pub fn search(index_dir: &str, query_str: &str) -> Result<()> {
     }
 
     let total_time = search_start.elapsed();
+    let actual_results_count = results.len();
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("Summary:");
-    println!("  Unique results: {}", results.len());
+    println!("  Total matches found: {}", total_results);
+    println!("  Results returned: {}", actual_results_count);
     println!("  Document retrieval time: {:.3}ms", retrieve_time.as_secs_f64() * 1000.0);
     println!("  Total time: {:.3}ms", total_time.as_secs_f64() * 1000.0);
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -157,12 +163,15 @@ fn execute_mobile_fanout(
     for (_score, addr) in &mobile_docs {
         all_addresses.insert(*addr);
 
-        // Extract master_id
+        // Extract master_id (skip empty values)
         let doc: TantivyDocument = searcher.doc(*addr)?;
         if let Some(master_id_val) = doc.get_first(master_id_field)
             .and_then(|v| Value::as_str(&v))
         {
-            master_ids.insert(master_id_val.to_string());
+            let master_id = master_id_val.trim();
+            if !master_id.is_empty() {
+                master_ids.insert(master_id.to_string());
+            }
         }
     }
 
@@ -171,11 +180,28 @@ fn execute_mobile_fanout(
     if !master_ids.is_empty() {
         let master_id_parser = QueryParser::for_index(searcher.index(), vec![master_id_field]);
 
-        // Build OR query for all master_ids
+        // Build OR query for all master_ids (skip empty ones)
         let mut master_id_queries: Vec<(Occur, Box<dyn Query>)> = Vec::new();
         for master_id in &master_ids {
-            let query = master_id_parser.parse_query(&format!("master_id:{}", master_id))?;
-            master_id_queries.push((Occur::Should, query));
+            let master_id = master_id.trim();
+            if master_id.is_empty() {
+                continue;
+            }
+            // Escape special characters that might break QueryParser
+            let query_str = format!("master_id:\"{}\"", master_id.replace('"', "\\\""));
+            match master_id_parser.parse_query(&query_str) {
+                Ok(query) => master_id_queries.push((Occur::Should, query)),
+                Err(e) => {
+                    // If quoted query fails, try without quotes
+                    let simple_query_str = format!("master_id:{}", master_id);
+                    if let Ok(query) = master_id_parser.parse_query(&simple_query_str) {
+                        master_id_queries.push((Occur::Should, query));
+                    } else {
+                        // Skip invalid master_ids
+                        eprintln!("Warning: Skipping invalid master_id '{}': {}", master_id, e);
+                    }
+                }
+            }
         }
 
         if master_id_queries.len() == 1 {
@@ -192,14 +218,30 @@ fn execute_mobile_fanout(
         }
     }
 
-    // Step 4: Find all rows where alt = X
-    let alt_parser = QueryParser::for_index(searcher.index(), vec![alt_field]);
-    let alt_query = alt_parser.parse_query(&format!("alt:{}", mobile_value))?;
-    let alt_docs = searcher.search(&alt_query, &TopDocs::with_limit(MAX_RESULTS))?;
-
-    for (_score, addr) in &alt_docs {
-        all_addresses.insert(*addr);
+    // Step 4: Find all rows where alt = X (only if mobile_value is not empty)
+    if !mobile_value.trim().is_empty() {
+        let alt_parser = QueryParser::for_index(searcher.index(), vec![alt_field]);
+        // Use quoted query to handle special characters
+        let alt_query_str = format!("alt:\"{}\"", mobile_value.replace('"', "\\\""));
+        match alt_parser.parse_query(&alt_query_str) {
+            Ok(alt_query) => {
+                let alt_docs = searcher.search(&alt_query, &TopDocs::with_limit(MAX_RESULTS))?;
+                for (_score, addr) in &alt_docs {
+                    all_addresses.insert(*addr);
+                }
+            }
+            Err(_) => {
+                // Fallback to unquoted query
+                if let Ok(alt_query) = alt_parser.parse_query(&format!("alt:{}", mobile_value)) {
+                    let alt_docs = searcher.search(&alt_query, &TopDocs::with_limit(MAX_RESULTS))?;
+                    for (_score, addr) in &alt_docs {
+                        all_addresses.insert(*addr);
+                    }
+                }
+            }
+        }
     }
+
 
     Ok(all_addresses)
 }
