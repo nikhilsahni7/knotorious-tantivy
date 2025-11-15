@@ -3,6 +3,10 @@ use tantivy::schema::*;
 pub fn build_schema() -> Schema {
     let mut schema_builder = Schema::builder();
 
+    // NOTE: This schema matches the existing index (all TEXT | STORED)
+    // The index was built with all fields as TEXT | STORED
+    // We use TEXT fields for all fields to match the existing index structure
+
     schema_builder.add_text_field("master_id", TEXT | STORED);
     schema_builder.add_text_field("mobile", TEXT | STORED);
     schema_builder.add_text_field("alt", TEXT | STORED);

@@ -1,6 +1,7 @@
 mod schema;
 mod indexer;
 mod search;
+mod query_parser;
 
 use anyhow::Result;
 
