@@ -1,7 +1,7 @@
 use crate::schema::build_schema;
 use anyhow::Result;
 use std::path::Path;
-use tantivy::{Index, Document};
+use tantivy::{Index, TantivyDocument};
 use csv::ReaderBuilder;
 
 pub fn build_index(csv_path: &str, index_dir: &str) -> Result<()> {
@@ -24,7 +24,7 @@ pub fn build_index(csv_path: &str, index_dir: &str) -> Result<()> {
     for row in rdr.records() {
         let row = row?;
 
-        let mut doc = Document::new();
+        let mut doc = TantivyDocument::default();
         doc.add_text(master, &row[0]);
         doc.add_text(mobile, &row[1]);
         doc.add_text(alt,    &row[2]);

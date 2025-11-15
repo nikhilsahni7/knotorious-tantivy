@@ -1,7 +1,7 @@
 use crate::schema::build_schema;
 use anyhow::Result;
-use tantivy::{Index, collector::TopDocs};
-use tantivy::query::QueryParser; // FIXED
+use tantivy::{Index, TantivyDocument, Document, collector::TopDocs};
+use tantivy::query::QueryParser; 
 
 pub fn search(index_dir: &str, query_str: &str) -> Result<()> {
     let schema = build_schema();
@@ -24,9 +24,8 @@ pub fn search(index_dir: &str, query_str: &str) -> Result<()> {
     let docs = searcher.search(&query, &TopDocs::with_limit(20))?;
 
     for (_score, addr) in docs {
-        let retrieved = searcher.doc(addr)?;
-        let json = serde_json::to_string_pretty(&schema.to_named_doc(&retrieved))?;
-        println!("{}", json);
+        let retrieved: TantivyDocument = searcher.doc(addr)?;
+        println!("{}", retrieved.to_json(&schema));
     }
 
     Ok(())
