@@ -223,16 +223,27 @@ impl CustomQueryParser {
                     }
 
                     // Strategy 1: Try phrase query first for exact matching (preserves order and structure)
+                    // BUT: Don't return early - we need to combine with other clauses using AND/OR
+                    // So we'll try phrase query but continue to token-based approach if we have multiple clauses
                     let escaped_phrase = cleaned_value
                         .replace('\\', "\\\\")
                         .replace('"', "\\\"");
                     let phrase_query_str = format!("{}:\"{}\"", clause.field, escaped_phrase);
-                    if let Ok(phrase_query) = parser.parse_query(&phrase_query_str) {
-                        return Ok(phrase_query);
+                    let phrase_query_result = parser.parse_query(&phrase_query_str);
+
+                    // Strategy 2: Use token-based query (more flexible for combining with other clauses)
+                    // If we have only one clause total, we can use phrase query
+                    // Otherwise, use token-based approach so we can properly combine with AND/OR
+                    let use_phrase = parsed.clauses.len() == 1;
+
+                    if use_phrase {
+                        // Single clause - can use phrase query for exact matching
+                        if let Ok(phrase_query) = phrase_query_result {
+                            return Ok(phrase_query);
+                        }
                     }
 
-                    // Strategy 2: Use AND query with all meaningful tokens
-                    // This ensures all important parts of the address/name are matched
+                    // Token-based approach (works better for multi-clause queries)
                     if tokens.len() == 1 {
                         // Single token - use exact term query
                         let token = &tokens[0];
@@ -247,7 +258,7 @@ impl CustomQueryParser {
                             })
                         })
                     } else {
-                        // Multiple tokens - use AND query (all tokens must appear)
+                        // Multiple tokens - use AND query (all tokens must appear within this field)
                         // This is more flexible than phrase query but still precise
                         let and_query = tokens.iter()
                             .map(|token| format!("{}:{}", clause.field, token))
