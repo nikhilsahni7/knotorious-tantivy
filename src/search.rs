@@ -1,4 +1,3 @@
-use crate::schema::build_schema;
 use crate::query_parser::CustomQueryParser;
 use anyhow::Result;
 use std::collections::HashSet;
@@ -7,7 +6,7 @@ use tantivy::{
     Index, TantivyDocument, collector::TopDocs,
     ReloadPolicy, DocAddress, Term
 };
-use tantivy::query::{QueryParser, Query, BooleanQuery, Occur, TermQuery};
+use tantivy::query::{Query, BooleanQuery, Occur, TermQuery};
 use tantivy::schema::{Value, IndexRecordOption};
 use serde_json::json;
 
@@ -23,6 +22,7 @@ pub fn search(index_dir: &str, query_str: &str) -> Result<()> {
     // Use the actual schema from the index (not build_schema)
     let schema = index.schema();
 
+    // Use Manual reload policy
     let reader = index.reader_builder()
         .reload_policy(ReloadPolicy::Manual)
         .try_into()?;
@@ -46,19 +46,18 @@ pub fn search(index_dir: &str, query_str: &str) -> Result<()> {
     let is_mobile_search = parsed_query.clauses.len() == 1
         && parsed_query.clauses[0].field == "mobile";
 
-    let mut all_doc_addresses: HashSet<DocAddress> = HashSet::new();
-
-    if is_mobile_search {
+    let all_doc_addresses = if is_mobile_search {
         // Mobile fan-out logic
         let mobile_value = query_parser.normalize_value("mobile", &parsed_query.clauses[0].value);
-        let results = execute_mobile_fanout(&searcher, &schema, &query_parser, &mobile_value)?;
-        all_doc_addresses = results;
+        execute_mobile_fanout(&searcher, &schema, &query_parser, &mobile_value)?
     } else {
         // Regular query execution
         let query = query_parser.build_query(&parsed_query)?;
-        let docs = searcher.search(&*query, &TopDocs::with_limit(MAX_RESULTS))?;
-        all_doc_addresses = docs.into_iter().map(|(_score, addr)| addr).collect();
-    }
+        searcher.search(&*query, &TopDocs::with_limit(MAX_RESULTS))?
+            .into_iter()
+            .map(|(_score, addr)| addr)
+            .collect()
+    };
 
     let execute_time = execute_start.elapsed();
     let total_results = all_doc_addresses.len();
@@ -111,7 +110,7 @@ pub fn search(index_dir: &str, query_str: &str) -> Result<()> {
 fn execute_mobile_fanout(
     searcher: &tantivy::Searcher,
     schema: &tantivy::schema::Schema,
-    query_parser: &CustomQueryParser,
+    _query_parser: &CustomQueryParser,
     mobile_value: &str,
 ) -> Result<HashSet<DocAddress>> {
     let mut all_addresses: HashSet<DocAddress> = HashSet::new();
