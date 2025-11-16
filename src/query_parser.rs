@@ -185,67 +185,98 @@ impl CustomQueryParser {
                     Box::new(TermQuery::new(term, IndexRecordOption::Basic))
                 }
                 "name" | "fname" | "address" | "email" => {
-                    // TEXT fields - optimize for fast partial matching
+                    // TEXT fields - handle special characters and punctuation properly
                     let field_vec = vec![*field];
                     let parser = QueryParser::for_index(&self.index, field_vec);
 
-                    // Split into words for multi-word queries
-                    let words: Vec<&str> = normalized_value.split_whitespace().collect();
+                    // Clean and prepare the query value
+                    // Remove excessive whitespace but preserve structure
+                    let cleaned_value = normalized_value
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ");
 
-                    if words.len() == 1 {
-                        // Single word - try prefix query first (fastest for partial matches)
-                        let word = words[0];
-                        if word.len() >= 3 {
-                            // Use prefix query for words 3+ chars (faster)
-                            let query_str = format!("{}:{}*", clause.field, word);
+                    // Extract meaningful words/tokens from the query
+                    // Split on whitespace and punctuation, but keep tokens with content
+                    let tokens: Vec<String> = cleaned_value
+                        .split(|c: char| c.is_whitespace() || (c.is_ascii_punctuation() && c != '-' && c != '.'))
+                        .filter_map(|s| {
+                            let trimmed = s.trim();
+                            // Keep tokens that are:
+                            // - At least 2 characters, OR
+                            // - Single character that's alphanumeric (like "y" in "block y")
+                            // - Contains digits (like "1550", "83", "110044")
+                            if trimmed.len() >= 2 {
+                                Some(trimmed.to_lowercase())
+                            } else if trimmed.len() == 1 && trimmed.chars().next().map_or(false, |c| c.is_alphanumeric()) {
+                                Some(trimmed.to_lowercase())
+                            } else if trimmed.chars().any(|c| c.is_ascii_digit()) {
+                                Some(trimmed.to_lowercase())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+
+                    if tokens.is_empty() {
+                        return Err(anyhow!("Query value too short after filtering"));
+                    }
+
+                    // Strategy 1: Try phrase query first for exact matching (preserves order and structure)
+                    let escaped_phrase = cleaned_value
+                        .replace('\\', "\\\\")
+                        .replace('"', "\\\"");
+                    let phrase_query_str = format!("{}:\"{}\"", clause.field, escaped_phrase);
+                    if let Ok(phrase_query) = parser.parse_query(&phrase_query_str) {
+                        return Ok(phrase_query);
+                    }
+
+                    // Strategy 2: Use AND query with all meaningful tokens
+                    // This ensures all important parts of the address/name are matched
+                    if tokens.len() == 1 {
+                        // Single token - use exact term query
+                        let token = &tokens[0];
+                        let query_str = format!("{}:{}", clause.field, token);
+                        parser.parse_query(&query_str).unwrap_or_else(|_| {
+                            // Fallback: try with quotes
+                            let query_str = format!("{}:\"{}\"", clause.field, token);
                             parser.parse_query(&query_str).unwrap_or_else(|_| {
-                                // Fallback to regular query
-                                let query_str = format!("{}:{}", clause.field, word);
-                                parser.parse_query(&query_str).unwrap_or_else(|_| {
-                                    // Last resort: term query
-                                    let term = Term::from_field_text(*field, word);
-                                    Box::new(TermQuery::new(term, IndexRecordOption::Basic))
-                                })
-                            })
-                        } else {
-                            // Short words - use regular query
-                            let query_str = format!("{}:{}", clause.field, word);
-                            parser.parse_query(&query_str).unwrap_or_else(|_| {
-                                let term = Term::from_field_text(*field, word);
+                                // Last resort: direct term query
+                                let term = Term::from_field_text(*field, token);
                                 Box::new(TermQuery::new(term, IndexRecordOption::Basic))
                             })
-                        }
+                        })
                     } else {
-                        // Multiple words - use AllTermsQuery for fastest AND matching
-                        // This is much faster than QueryParser for multi-word queries
-                        let terms: Vec<Term> = words.iter()
-                            .filter(|w| w.len() >= 2) // Filter very short words
-                            .map(|w| Term::from_field_text(*field, w))
-                            .collect();
+                        // Multiple tokens - use AND query (all tokens must appear)
+                        // This is more flexible than phrase query but still precise
+                        let and_query = tokens.iter()
+                            .map(|token| format!("{}:{}", clause.field, token))
+                            .collect::<Vec<_>>()
+                            .join(" AND ");
 
-                        if terms.len() == 1 {
-                            // Single term after filtering
-                            Box::new(TermQuery::new(terms[0].clone(), IndexRecordOption::Basic))
-                        } else if terms.len() > 1 {
-                            // Use BooleanQuery with all terms as Must (AND) for fast matching
-                            let term_queries: Vec<(Occur, Box<dyn Query>)> = terms.iter()
-                                .map(|term| {
-                                    (Occur::Must, Box::new(TermQuery::new(term.clone(), IndexRecordOption::Basic)) as Box<dyn Query>)
-                                })
-                                .collect();
-                            Box::new(BooleanQuery::new(term_queries))
-                        } else {
-                            // Fallback to QueryParser if no valid terms
-                            let query_str = words.iter()
-                                .map(|w| format!("{}:{}", clause.field, w))
-                                .collect::<Vec<_>>()
-                                .join(" AND ");
-                            parser.parse_query(&query_str).unwrap_or_else(|_| {
-                                // Last resort
-                                let term = Term::from_field_text(*field, &normalized_value);
+                        parser.parse_query(&and_query).unwrap_or_else(|_| {
+                            // Fallback: manually create BooleanQuery with each token
+                            let mut term_queries: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+
+                            for token in &tokens {
+                                let single_token_query = format!("{}:{}", clause.field, token);
+                                if let Ok(q) = parser.parse_query(&single_token_query) {
+                                    term_queries.push((Occur::Must, q));
+                                } else {
+                                    // Direct term query as fallback
+                                    let term = Term::from_field_text(*field, token);
+                                    term_queries.push((Occur::Must, Box::new(TermQuery::new(term, IndexRecordOption::Basic)) as Box<dyn Query>));
+                                }
+                            }
+
+                            if term_queries.is_empty() {
+                                // Final fallback: use the whole cleaned value
+                                let term = Term::from_field_text(*field, &cleaned_value.to_lowercase());
                                 Box::new(TermQuery::new(term, IndexRecordOption::Basic))
-                            })
-                        }
+                            } else {
+                                Box::new(BooleanQuery::new(term_queries))
+                            }
+                        })
                     }
                 }
                 _ => {

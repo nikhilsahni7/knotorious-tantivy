@@ -1,9 +1,9 @@
 "use client";
 
-import { Copy, ChevronLeft, ChevronRight } from "lucide-react";
 import { SearchResult } from "@/lib/api";
 import { formatNumber } from "@/lib/utils";
-import { useState, useMemo, useCallback } from "react";
+import { ChevronLeft, ChevronRight, Copy } from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
 
 interface ResultsTableProps {
   results: SearchResult[];
@@ -86,32 +86,51 @@ export default function ResultsTable({
     setCurrentPage(1);
   }, [filterText]);
 
-  const goToPage = useCallback((page: number) => {
-    if (page >= 1 && page <= totalPages) {
-      setCurrentPage(page);
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    }
-  }, [totalPages]);
+  const goToPage = useCallback(
+    (page: number) => {
+      if (page >= 1 && page <= totalPages) {
+        setCurrentPage(page);
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+    },
+    [totalPages]
+  );
 
   return (
     <div className="bg-slate-800/50 rounded-lg border border-slate-700 p-6">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
         <div className="space-y-1">
           <div className="text-sm text-slate-300">
-            Showing <span className="font-semibold text-slate-100">{formatNumber(startIndex + 1)}-{formatNumber(Math.min(endIndex, filteredResults.length))}</span> of{" "}
-            <span className="font-semibold text-slate-100">{formatNumber(filteredResults.length)}</span> filtered results
+            Showing{" "}
+            <span className="font-semibold text-slate-100">
+              {formatNumber(startIndex + 1)}-
+              {formatNumber(Math.min(endIndex, filteredResults.length))}
+            </span>{" "}
+            of{" "}
+            <span className="font-semibold text-slate-100">
+              {formatNumber(filteredResults.length)}
+            </span>{" "}
+            filtered results
             {resultsReturned !== filteredResults.length && (
-              <span className="text-slate-400"> (from {formatNumber(resultsReturned)} returned)</span>
+              <span className="text-slate-400">
+                {" "}
+                (from {formatNumber(resultsReturned)} returned)
+              </span>
             )}
           </div>
           <div className="text-xs text-slate-400">
-            Total matches in database: <span className="font-semibold text-blue-400">{formatNumber(totalMatches)}</span>
+            Total matches in database:{" "}
+            <span className="font-semibold text-blue-400">
+              {formatNumber(totalMatches)}
+            </span>
           </div>
           <div className="text-xs text-slate-400 space-x-4">
             <span>Query: {queryParseTime.toFixed(2)}ms</span>
             <span>Execution: {searchExecutionTime.toFixed(2)}ms</span>
             <span>Retrieval: {documentRetrievalTime.toFixed(2)}ms</span>
-            <span className="font-semibold text-green-400">Total: {searchTime.toFixed(2)}ms</span>
+            <span className="font-semibold text-green-400">
+              Total: {searchTime.toFixed(2)}ms
+            </span>
           </div>
         </div>
         <button
@@ -138,19 +157,37 @@ export default function ResultsTable({
         <table className="w-full table-auto">
           <thead className="bg-slate-900/50 border-b border-slate-600">
             <tr>
-              <th className="text-left py-3 px-4 text-sm font-semibold text-slate-300 whitespace-nowrap">Master ID</th>
-              <th className="text-left py-3 px-4 text-sm font-semibold text-slate-300 whitespace-nowrap">Name</th>
-              <th className="text-left py-3 px-4 text-sm font-semibold text-slate-300 whitespace-nowrap">Father Name</th>
-              <th className="text-left py-3 px-4 text-sm font-semibold text-slate-300 whitespace-nowrap">Mobile</th>
-              <th className="text-left py-3 px-4 text-sm font-semibold text-slate-300 whitespace-nowrap">Alt Phone</th>
-              <th className="text-left py-3 px-4 text-sm font-semibold text-slate-300 whitespace-nowrap">Email</th>
-              <th className="text-left py-3 px-4 text-sm font-semibold text-slate-300 whitespace-nowrap">Address</th>
-              <th className="text-left py-3 px-4 text-sm font-semibold text-slate-300 whitespace-nowrap">Action</th>
+              <th className="text-left py-3 px-4 text-sm font-semibold text-slate-300 whitespace-nowrap">
+                Master ID
+              </th>
+              <th className="text-left py-3 px-4 text-sm font-semibold text-slate-300 whitespace-nowrap">
+                Name
+              </th>
+              <th className="text-left py-3 px-4 text-sm font-semibold text-slate-300 whitespace-nowrap">
+                Father Name
+              </th>
+              <th className="text-left py-3 px-4 text-sm font-semibold text-slate-300 whitespace-nowrap">
+                Mobile
+              </th>
+              <th className="text-left py-3 px-4 text-sm font-semibold text-slate-300 whitespace-nowrap">
+                Alt Phone
+              </th>
+              <th className="text-left py-3 px-4 text-sm font-semibold text-slate-300 whitespace-nowrap">
+                Email
+              </th>
+              <th className="text-left py-3 px-4 text-sm font-semibold text-slate-300 whitespace-nowrap">
+                Address
+              </th>
+              <th className="text-left py-3 px-4 text-sm font-semibold text-slate-300 whitespace-nowrap">
+                Action
+              </th>
             </tr>
           </thead>
           <tbody>
             {paginatedResults.map((result, index) => {
-              const rowId = `${result.master_id}-${result.mobile}-${startIndex + index}`;
+              const rowId = `${result.master_id}-${result.mobile}-${
+                startIndex + index
+              }`;
               return (
                 <tr
                   key={rowId}
@@ -202,7 +239,13 @@ export default function ResultsTable({
                       aria-label="Copy row"
                       disabled={copiedId === rowId}
                     >
-                      <Copy className={`w-4 h-4 ${copiedId === rowId ? "text-green-400" : "text-blue-400"}`} />
+                      <Copy
+                        className={`w-4 h-4 ${
+                          copiedId === rowId
+                            ? "text-green-400"
+                            : "text-blue-400"
+                        }`}
+                      />
                     </button>
                   </td>
                 </tr>
@@ -216,7 +259,9 @@ export default function ResultsTable({
       {totalPages > 1 && (
         <div className="flex items-center justify-between mt-4 pt-4 border-t border-slate-700">
           <div className="text-sm text-slate-400">
-            Page <span className="font-semibold text-slate-200">{currentPage}</span> of{" "}
+            Page{" "}
+            <span className="font-semibold text-slate-200">{currentPage}</span>{" "}
+            of{" "}
             <span className="font-semibold text-slate-200">{totalPages}</span>
           </div>
           <div className="flex items-center gap-2">
