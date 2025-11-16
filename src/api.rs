@@ -1,5 +1,6 @@
 use crate::search_service::SearchService;
 use actix_web::{web, App, HttpServer, HttpResponse, Result as ActixResult};
+use actix_cors::Cors;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use anyhow::anyhow;
@@ -136,7 +137,14 @@ pub async fn start_server(index_dir: String, host: String, port: u16) -> Result<
     println!("Index directory: {}", index_dir);
 
     HttpServer::new(move || {
+        let cors = Cors::default()
+            .allow_any_origin()
+            .allow_any_method()
+            .allow_any_header()
+            .max_age(3600);
+
         App::new()
+            .wrap(cors)
             .app_data(web::Data::new(service.clone()))
             .route("/search", web::post().to(search_handler))
             .route("/health", web::get().to(health_handler))
