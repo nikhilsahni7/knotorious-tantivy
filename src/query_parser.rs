@@ -163,7 +163,7 @@ impl CustomQueryParser {
         }
     }
 
-    /// Build Tantivy query from parsed query
+    /// Build optimized Tantivy query from parsed query
     pub fn build_query(&self, parsed: &ParsedQuery) -> Result<Box<dyn Query>> {
         if parsed.clauses.is_empty() {
             return Err(anyhow!("No query clauses"));
@@ -178,8 +178,6 @@ impl CustomQueryParser {
                 .ok_or_else(|| anyhow!("Unknown field: {}", clause.field))?;
 
             // Optimized query building based on field type
-            // STRING fields (mobile, alt, master_id): Use TermQuery for fastest exact matches
-            // TEXT fields (name, fname, address, email): Use QueryParser for partial matches
             let query: Box<dyn Query> = match clause.field.as_str() {
                 "mobile" | "alt" | "master_id" => {
                     // STRING fields - use TermQuery (fastest for exact matches)
@@ -187,23 +185,67 @@ impl CustomQueryParser {
                     Box::new(TermQuery::new(term, IndexRecordOption::Basic))
                 }
                 "name" | "fname" | "address" | "email" => {
-                    // TEXT fields - use QueryParser for partial/prefix matches
+                    // TEXT fields - optimize for fast partial matching
                     let field_vec = vec![*field];
                     let parser = QueryParser::for_index(&self.index, field_vec);
 
-                    // Handle multi-word queries for partial matching
+                    // Split into words for multi-word queries
                     let words: Vec<&str> = normalized_value.split_whitespace().collect();
+
                     if words.len() == 1 {
-                        // Single word - simple query
-                        let query_str = format!("{}:{}", clause.field, words[0]);
-                        parser.parse_query(&query_str)?
+                        // Single word - try prefix query first (fastest for partial matches)
+                        let word = words[0];
+                        if word.len() >= 3 {
+                            // Use prefix query for words 3+ chars (faster)
+                            let query_str = format!("{}:{}*", clause.field, word);
+                            parser.parse_query(&query_str).unwrap_or_else(|_| {
+                                // Fallback to regular query
+                                let query_str = format!("{}:{}", clause.field, word);
+                                parser.parse_query(&query_str).unwrap_or_else(|_| {
+                                    // Last resort: term query
+                                    let term = Term::from_field_text(*field, word);
+                                    Box::new(TermQuery::new(term, IndexRecordOption::Basic))
+                                })
+                            })
+                        } else {
+                            // Short words - use regular query
+                            let query_str = format!("{}:{}", clause.field, word);
+                            parser.parse_query(&query_str).unwrap_or_else(|_| {
+                                let term = Term::from_field_text(*field, word);
+                                Box::new(TermQuery::new(term, IndexRecordOption::Basic))
+                            })
+                        }
                     } else {
-                        // Multiple words - use AND query for all words
-                        let query_str = words.iter()
-                            .map(|w| format!("{}:{}", clause.field, w))
-                            .collect::<Vec<_>>()
-                            .join(" AND ");
-                        parser.parse_query(&query_str)?
+                        // Multiple words - use AllTermsQuery for fastest AND matching
+                        // This is much faster than QueryParser for multi-word queries
+                        let terms: Vec<Term> = words.iter()
+                            .filter(|w| w.len() >= 2) // Filter very short words
+                            .map(|w| Term::from_field_text(*field, w))
+                            .collect();
+
+                        if terms.len() == 1 {
+                            // Single term after filtering
+                            Box::new(TermQuery::new(terms[0].clone(), IndexRecordOption::Basic))
+                        } else if terms.len() > 1 {
+                            // Use BooleanQuery with all terms as Must (AND) for fast matching
+                            let term_queries: Vec<(Occur, Box<dyn Query>)> = terms.iter()
+                                .map(|term| {
+                                    (Occur::Must, Box::new(TermQuery::new(term.clone(), IndexRecordOption::Basic)) as Box<dyn Query>)
+                                })
+                                .collect();
+                            Box::new(BooleanQuery::new(term_queries))
+                        } else {
+                            // Fallback to QueryParser if no valid terms
+                            let query_str = words.iter()
+                                .map(|w| format!("{}:{}", clause.field, w))
+                                .collect::<Vec<_>>()
+                                .join(" AND ");
+                            parser.parse_query(&query_str).unwrap_or_else(|_| {
+                                // Last resort
+                                let term = Term::from_field_text(*field, &normalized_value);
+                                Box::new(TermQuery::new(term, IndexRecordOption::Basic))
+                            })
+                        }
                     }
                 }
                 _ => {

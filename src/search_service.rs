@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 use tantivy::{
-    Index, IndexReader, TantivyDocument, collector::TopDocs,
+    Index, IndexReader, TantivyDocument, collector::{TopDocs, Count},
     ReloadPolicy, DocAddress, Term
 };
 use tantivy::query::{Query, BooleanQuery, Occur, TermQuery};
@@ -60,21 +60,39 @@ impl SearchService {
         let is_mobile_search = parsed_query.clauses.len() == 1
             && parsed_query.clauses[0].field == "mobile";
 
-        let all_doc_addresses = if is_mobile_search {
-            // Mobile fan-out logic
+        // Build the query for counting and searching
+        let query = if is_mobile_search {
+            // For mobile search, we need to count differently (fan-out logic)
+            // We'll count after getting addresses
+            None
+        } else {
+            Some(self.query_parser.build_query(&parsed_query)?)
+        };
+
+        // Get results and total count
+        let (all_doc_addresses, total_matches) = if is_mobile_search {
+            // Mobile fan-out logic - get addresses and count
             let mobile_value = self.query_parser.normalize_value("mobile", &parsed_query.clauses[0].value);
-            self.execute_mobile_fanout(&searcher, &mobile_value)?
+            let addresses = self.execute_mobile_fanout(&searcher, &mobile_value)?;
+            let total = addresses.len();
+            (addresses, total)
         } else {
             // Regular query execution
-            let query = self.query_parser.build_query(&parsed_query)?;
-            searcher.search(&*query, &TopDocs::with_limit(MAX_RESULTS))?
+            let q = query.as_ref().unwrap();
+
+            // Get total count FIRST using Count collector (fast, doesn't retrieve docs)
+            let total = searcher.search(q.as_ref(), &Count)?;
+
+            // Then get limited results
+            let addresses: HashSet<DocAddress> = searcher.search(q.as_ref(), &TopDocs::with_limit(MAX_RESULTS))?
                 .into_iter()
                 .map(|(_score, addr)| addr)
-                .collect()
+                .collect();
+
+            (addresses, total)
         };
 
         let execute_time = execute_start.elapsed();
-        let total_results = all_doc_addresses.len();
 
         // Retrieve documents
         let retrieve_start = Instant::now();
@@ -97,7 +115,7 @@ impl SearchService {
 
         Ok(SearchResults {
             results: json_results,
-            total_matches: total_results,
+            total_matches,
             results_returned: results.len(),
             query_parse_time_ms: parse_time.as_secs_f64() * 1000.0,
             search_execution_time_ms: execute_time.as_secs_f64() * 1000.0,
