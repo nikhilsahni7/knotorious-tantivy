@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const API_URL = "https://api.knotorious.co.in";
+const API_URL = "http://localhost:8080";
 
 export interface SearchResult {
   master_id: string;
