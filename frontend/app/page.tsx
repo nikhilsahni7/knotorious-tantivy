@@ -4,7 +4,7 @@ import RefineResults from "@/components/RefineResults";
 import ResultsTable from "@/components/ResultsTable";
 import SearchForm from "@/components/SearchForm";
 import { searchAPI, type SearchResult } from "@/lib/api";
-import { useState, useCallback } from "react";
+import { useCallback, useState } from "react";
 
 interface SearchFields {
   master_id: string;
@@ -46,6 +46,7 @@ export default function Home() {
     documentRetrievalTime: 0,
   });
   const [filterText, setFilterText] = useState("");
+  const [hasSearched, setHasSearched] = useState(false);
 
   const handleSearch = useCallback(async () => {
     if (loading) return;
@@ -58,10 +59,18 @@ export default function Home() {
         filter: searchMode,
       };
 
+      let hasCriteria = false;
       for (const [key, value] of Object.entries(searchFields)) {
         if (value.trim()) {
           payload[key] = value.trim();
+          hasCriteria = true;
         }
+      }
+
+      if (!hasCriteria) {
+        setError("Please enter at least one search criteria");
+        setLoading(false);
+        return;
       }
 
       const response = await searchAPI(
@@ -77,6 +86,7 @@ export default function Home() {
         searchExecutionTime: response.search_execution_time_ms,
         documentRetrievalTime: response.document_retrieval_time_ms,
       });
+      setHasSearched(true);
     } catch (err) {
       console.error("Search error:", err);
       setError(
@@ -108,6 +118,7 @@ export default function Home() {
       searchExecutionTime: 0,
       documentRetrievalTime: 0,
     });
+    setHasSearched(false);
   }, []);
 
   return (
@@ -160,7 +171,9 @@ export default function Home() {
 
         {results.length === 0 && !loading && !error && (
           <div className="text-center py-12 text-slate-400">
-            Enter search criteria and click Search to find results
+            {!hasSearched
+              ? "Enter search criteria and click Search to find results"
+              : "No results found in database"}
           </div>
         )}
       </div>
