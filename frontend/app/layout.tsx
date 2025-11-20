@@ -1,8 +1,9 @@
+import Header from "@/components/Header";
 import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Knotorious Search",
+  title: "Knotorious Offline",
   description: "Advanced search platform",
 };
 
@@ -13,7 +14,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className="antialiased">{children}</body>
+      <body className="antialiased">
+        <Header />
+        {children}
+      </body>
     </html>
   );
 }
