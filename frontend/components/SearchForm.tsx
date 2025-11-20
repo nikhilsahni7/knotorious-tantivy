@@ -35,8 +35,13 @@ export default function SearchForm({
     onFieldChange({ ...searchFields, [key]: value });
   };
 
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onSearch();
+  };
+
   return (
-    <div className="bg-slate-800/50 rounded-lg border border-slate-700 p-6 mb-6">
+    <form onSubmit={handleSubmit} className="bg-slate-800/50 rounded-lg border border-slate-700 p-6 mb-6">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 mb-6">
         <div>
           <label htmlFor="master_id" className="block text-sm font-medium text-slate-300 mb-2">
@@ -163,8 +168,7 @@ export default function SearchForm({
 
       <div className="flex flex-col sm:flex-row gap-4">
         <button
-          type="button"
-          onClick={onSearch}
+          type="submit"
           disabled={loading}
           className="flex items-center justify-center gap-2 px-8 py-3 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 transition-colors shadow-lg hover:shadow-blue-500/50 disabled:opacity-50 disabled:cursor-not-allowed"
         >
@@ -179,6 +183,6 @@ export default function SearchForm({
           Reset
         </button>
       </div>
-    </div>
+    </form>
   );
 }
